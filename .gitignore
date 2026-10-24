@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+backups/
+docker-compose.yml.bak-*
+secrets/

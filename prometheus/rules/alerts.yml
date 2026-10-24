@@ -1,0 +1,14 @@
+groups:
+
+  - name: bai8-alerts
+
+    rules:
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target đang down"
+          description: "Một target được Prometheus giám sát không phản hồi."

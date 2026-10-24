@@ -1,0 +1,248 @@
+services:
+
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+    environment:
+      PMA_HOST: mysql8
+      PMA_PORT: "3306"
+    depends_on:
+      mysql8:
+        condition: service_healthy
+    networks:
+      - monitoring
+      - database
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mysql8:
+    image: mysql:8.4
+    restart: unless-stopped
+    env_file:
+      - ./.env.mysql8
+    volumes:
+      - mysql8_data:/var/lib/mysql
+    networks:
+      - database
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql -h 127.0.0.1 -u root -Nse "SELECT 1"'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  mysql-exporter:
+    image: prom/mysqld-exporter:v0.17.2
+    user: "65534:65534"
+    restart: unless-stopped
+    command:
+      - --config.my-cnf=/etc/mysqld-exporter.cnf
+      - --mysqld.address=mysql8:3306
+    volumes:
+      - ./secrets/mysqld-exporter.cnf:/etc/mysqld-exporter.cnf:ro
+    depends_on:
+      mysql8:
+        condition: service_healthy
+    networks:
+      - monitoring
+      - database
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.5.1
+    restart: unless-stopped
+    command:
+      - --nginx.scrape-uri=http://nginx:8080/stub_status
+    depends_on:
+      - nginx
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    command:
+      - --housekeeping_interval=30s
+    networks:
+      - monitoring
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - wordpress
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    restart: unless-stopped
+    volumes:
+      - wordpress_data:/var/www/html
+    env_file:
+      - ./.env.wordpress
+    depends_on:
+      mysql8:
+        condition: service_healthy
+    networks:
+      - monitoring
+      - database
+
+  mysql:
+    image: mariadb:lts
+    container_name: mysql
+    restart: unless-stopped
+    env_file:
+      - ./.env.mariadb
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - monitoring
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+      - loki
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    command:
+      - "-config.file=/etc/loki/loki-config.yaml"
+    networks:
+      - monitoring
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+    networks:
+      - monitoring
+    depends_on:
+      - loki
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/config.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+
+volumes:
+  wordpress_data:
+    external: true
+    name: ${WORDPRESS_VOLUME_NAME:-recipe_wordpress_data}
+  mysql_data:
+  mysql8_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  alertmanager_data:
+
+networks:
+  monitoring:
+    driver: bridge
+  database:
+    driver: bridge
+    internal: true
